@@ -1,6 +1,6 @@
 ## jPaste: Intelligent Code Merging for VS Code
 🚀 Supercharge Your Coding Workflow!
-Are you tired of manually merging code snippets and battling with inconsistent formatting? Say hello to jPaste, the revolutionary VS Code extension that intelligently merges your clipboard content with your existing code!
+Are you fed up with LLMs embedding "comment placeholders" in their answers, forcing you to piece solutions back together like jigsaw puzzles?
   
 🌟 **Features**
 
