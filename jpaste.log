@@ -1,0 +1,3693 @@
+2024-07-07T14:59:54.304Z: jPaste extension is now active
+2024-07-07T14:59:54.306Z: jPaste function called
+2024-07-07T14:59:54.308Z: Clipboard content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T14:59:54.317Z: Document content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print(f"Processing user request: {user_request}")
+        prompt = self._create_breakdown_prompt(user_request)
+        if DEBUG:
+            print(f"Prompt: {prompt}")
+        response = self.provider.generate(prompt)
+        self.actionable_requests = self._parse_response(response)
+        return self.actionable_requests
+
+    def _create_breakdown_prompt(self, user_request: str) -> str:
+        return f"""
+        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:
+
+        User Request: "{user_request}"
+
+        Please break this request down into a series of actionable steps. Each step should be in the format:
+        [target_agent], [target_request], False
+
+        Where:
+        - [target_agent] is one of: Web_Agent or File_Agent
+        - [target_request] is the specific task for that agent
+        - False indicates that the task is not yet complete
+
+        Rules:
+        1. Web_Agent handles general information retrieval and processing tasks.
+        2. File_Agent handles all file-related operations (creating, writing).
+        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.
+        4. Provide the steps in the order they should be executed.
+        5. Do not include a separate step for saving the file. The write operation will automatically save the file.
+
+        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.
+        """
+
+    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print(f"Parsing response: {response}")  
+        try:
+            # Extract the JSON array from the response
+            json_str = response.strip().split('\n')[-1]  # Get the last line of the response
+            steps = json.loads(json_str)
+            return [(step[0], step[1], step[2]) for step in steps]
+        except json.JSONDecodeError:
+            print("Error parsing JSON response. Using fallback parsing method.")
+            return self._fallback_parse(response)
+
+    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print("Fallback parsing method")
+        steps = []
+        for line in response.split('\n'):
+            if ',' in line and '[' in line and ']' in line:
+                parts = line.strip()[1:-1].split(',')
+                if len(parts) >= 3:
+                    agent = parts[0].strip().strip('"')
+                    request = ','.join(parts[1:-1]).strip().strip('"')
+                    is_complete = False  # Always set to False initially
+                    steps.append((agent, request, is_complete))
+        return steps
+
+
+    def update_step_status(self, index: int, is_complete: bool):
+        if DEBUG:
+            print(f"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}")
+        if 0 <= index < len(self.actionable_requests):
+            agent, request, _ = self.actionable_requests[index]
+            self.actionable_requests[index] = (agent, request, is_complete)
+
+    def get_next_incomplete_step(self) -> Tuple[int, str, str]:
+        if DEBUG:
+            print("Getting next incomplete step")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if not is_complete:
+                return index, agent, request
+        return -1, "", ""  # All steps are complete
+
+    def all_steps_complete(self) -> bool:
+        if DEBUG:
+            print("Checking if all steps are complete")
+        return all(is_complete for _, _, is_complete in self.actionable_requests)
+
+    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):
+        if DEBUG:
+            print(f"Replacing placeholders in step {step_index + 1}")
+        if 0 <= step_index < len(self.actionable_requests):
+            agent, request, is_complete = self.actionable_requests[step_index]
+            for placeholder, value in replacements.items():
+                request = request.replace(f"{{{placeholder}}}", str(value))
+            self.actionable_requests[step_index] = (agent, request, is_complete)
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result and "compile" in request.lower():
+                    self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def get_final_result(self) -> str:
+        if DEBUG:
+            print("Getting final result")
+        if not self.results:
+            return "No steps were executed."
+        
+        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    actual_content = f.read()
+                if actual_content == self.shared_session['file_content']:
+                    return f"Python function has been created and saved in {self.shared_session['file_name']}. Content:\n\n{self.shared_session['file_content']}"
+                else:
+                    return f"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code."
+            else:
+                return f"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}."
+        else:
+            return "Operation completed, but couldn't retrieve final code or file name."
+        
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+                
+if __name__ == "__main__":
+    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)
+    boss = Boss_Agent(provider)
+
+    user_request = input("What would you like me to do? ")
+    steps = boss.process_user_request(user_request)
+
+    print("\nBreakdown of steps:")
+    for i, (agent, request, is_complete) in enumerate(steps):
+        print(f"{i+1}. {agent}: {request} (Complete: {is_complete})")
+
+    # Execute all steps
+    boss.execute_steps()
+
+    print("\nFinal status of steps:")
+    for i, (agent, request, is_complete) in enumerate(steps):
+        print(f"{i+1}. {agent}: {request} (Complete: {is_complete})")
+
+    print("\n" + boss.get_final_result())
+
+    if DEBUG:
+        boss.print_debug_info()
+2024-07-07T14:59:54.320Z: Diff changes: [
+  {
+    "count": 39,
+    "value": "# agents/Boss_Agent.py\r\n\r\nimport json\r\nimport os\r\nimport sys\r\nimport time\r\n\r\nfrom typing import Dict, List, Tuple\r\n\r\n# Add the parent directory to sys.path to import from sibling directories\r\nsys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\r\n\r\nfrom configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG\r\nfrom providers.anthropic_provider import AnthropicProvider\r\nfrom agents.Web_Agent import Web_Agent\r\nfrom agents.File_Agent import File_Agent\r\n\r\nclass SharedSession:\r\n    def __init__(self):\r\n        self.data = {}\r\n\r\n    def __setitem__(self, key, value):\r\n        self.data[key] = value\r\n\r\n    def __getitem__(self, key):\r\n        return self.data.get(key)\r\n\r\n    def __contains__(self, key):\r\n        return key in self.data\r\n\r\nclass Boss_Agent:\r\n    def __init__(self, provider):\r\n        self.provider = provider\r\n        self.actionable_requests = []\r\n        self.shared_session = SharedSession()\r\n        self.web_agent = Web_Agent(provider)\r\n        self.file_agent = File_Agent(provider, self.shared_session)\r\n        self.results = {}\r\n\r\n"
+  },
+  {
+    "count": 9,
+    "removed": true,
+    "value": "    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(f\"Processing user request: {user_request}\")\r\n        prompt = self._create_breakdown_prompt(user_request)\r\n        if DEBUG:\r\n            print(f\"Prompt: {prompt}\")\r\n        response = self.provider.generate(prompt)\r\n        self.actionable_requests = self._parse_response(response)\r\n        return self.actionable_requests\r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "    # ... (other methods remain the same)\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 25,
+    "removed": true,
+    "value": "    def _create_breakdown_prompt(self, user_request: str) -> str:\r\n        return f\"\"\"\r\n        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:\r\n\r\n        User Request: \"{user_request}\"\r\n\r\n        Please break this request down into a series of actionable steps. Each step should be in the format:\r\n        [target_agent], [target_request], False\r\n\r\n        Where:\r\n        - [target_agent] is one of: Web_Agent or File_Agent\r\n        - [target_request] is the specific task for that agent\r\n        - False indicates that the task is not yet complete\r\n\r\n        Rules:\r\n        1. Web_Agent handles general information retrieval and processing tasks.\r\n        2. File_Agent handles all file-related operations (creating, writing).\r\n        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.\r\n        4. Provide the steps in the order they should be executed.\r\n        5. Do not include a separate step for saving the file. The write operation will automatically save the file.\r\n\r\n        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.\r\n        \"\"\"\r\n\r\n    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:\r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n"
+  },
+  {
+    "count": 1,
+    "value": "        if DEBUG:\r\n"
+  },
+  {
+    "count": 1,
+    "removed": true,
+    "value": "            print(f\"Parsing response: {response}\")  \r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "            print(f\"Executing request: {agent} - {request}\")\r\n"
+  },
+  {
+    "count": 1,
+    "value": "        try:\r\n"
+  },
+  {
+    "count": 7,
+    "removed": true,
+    "value": "            # Extract the JSON array from the response\r\n            json_str = response.strip().split('\\n')[-1]  # Get the last line of the response\r\n            steps = json.loads(json_str)\r\n            return [(step[0], step[1], step[2]) for step in steps]\r\n        except json.JSONDecodeError:\r\n            print(\"Error parsing JSON response. Using fallback parsing method.\")\r\n            return self._fallback_parse(response)\r\n"
+  },
+  {
+    "count": 12,
+    "added": true,
+    "value": "            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result:\r\n                    if \"process\" in request.lower() or \"create\" in request.lower():\r\n                        self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 44,
+    "removed": true,
+    "value": "    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(\"Fallback parsing method\")\r\n        steps = []\r\n        for line in response.split('\\n'):\r\n            if ',' in line and '[' in line and ']' in line:\r\n                parts = line.strip()[1:-1].split(',')\r\n                if len(parts) >= 3:\r\n                    agent = parts[0].strip().strip('\"')\r\n                    request = ','.join(parts[1:-1]).strip().strip('\"')\r\n                    is_complete = False  # Always set to False initially\r\n                    steps.append((agent, request, is_complete))\r\n        return steps\r\n\r\n\r\n    def update_step_status(self, index: int, is_complete: bool):\r\n        if DEBUG:\r\n            print(f\"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}\")\r\n        if 0 <= index < len(self.actionable_requests):\r\n            agent, request, _ = self.actionable_requests[index]\r\n            self.actionable_requests[index] = (agent, request, is_complete)\r\n\r\n    def get_next_incomplete_step(self) -> Tuple[int, str, str]:\r\n        if DEBUG:\r\n            print(\"Getting next incomplete step\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if not is_complete:\r\n                return index, agent, request\r\n        return -1, \"\", \"\"  # All steps are complete\r\n\r\n    def all_steps_complete(self) -> bool:\r\n        if DEBUG:\r\n            print(\"Checking if all steps are complete\")\r\n        return all(is_complete for _, _, is_complete in self.actionable_requests)\r\n\r\n    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):\r\n        if DEBUG:\r\n            print(f\"Replacing placeholders in step {step_index + 1}\")\r\n        if 0 <= step_index < len(self.actionable_requests):\r\n            agent, request, is_complete = self.actionable_requests[step_index]\r\n            for placeholder, value in replacements.items():\r\n                request = request.replace(f\"{{{placeholder}}}\", str(value))\r\n            self.actionable_requests[step_index] = (agent, request, is_complete)\r\n\r\n"
+  },
+  {
+    "count": 21,
+    "value": "    def execute_steps(self):\r\n        if DEBUG:\r\n            print(\"Executing steps\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if is_complete:\r\n                continue\r\n\r\n            print(f\"\\nExecuting step {index + 1}: {agent} - {request}\")\r\n            \r\n            result = self._execute_agent_request(agent, request)\r\n            self.results[index] = result\r\n\r\n            print(f\"Result: {result[:100]}...\")  # Print first 100 characters of the result\r\n\r\n            self.actionable_requests[index] = (agent, request, True)\r\n            \r\n            # Add a 2-second delay between requests\r\n            time.sleep(2)\r\n\r\n        print(\"\\nAll steps completed!\")\r\n\r\n"
+  },
+  {
+    "count": 36,
+    "removed": true,
+    "value": "    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n        if DEBUG:\r\n            print(f\"Executing request: {agent} - {request}\")\r\n        try:\r\n            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result and \"compile\" in request.lower():\r\n                    self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n\r\n    def get_final_result(self) -> str:\r\n        if DEBUG:\r\n            print(\"Getting final result\")\r\n        if not self.results:\r\n            return \"No steps were executed.\"\r\n        \r\n        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    actual_content = f.read()\r\n                if actual_content == self.shared_session['file_content']:\r\n                    return f\"Python function has been created and saved in {self.shared_session['file_name']}. Content:\\n\\n{self.shared_session['file_content']}\"\r\n                else:\r\n                    return f\"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code.\"\r\n            else:\r\n                return f\"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}.\"\r\n        else:\r\n            return \"Operation completed, but couldn't retrieve final code or file name.\"\r\n        \r\n"
+  },
+  {
+    "count": 15,
+    "value": "    def print_debug_info(self):\r\n        print(\"\\nDebug Information:\")\r\n        print(f\"Shared Session: {self.shared_session.data}\")\r\n        print(f\"Results: {self.results}\")\r\n        print(f\"Actionable Requests: {self.actionable_requests}\")\r\n        \r\n        # Print file contents\r\n        if 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    print(f\"\\nContents of {self.shared_session['file_name']}:\")\r\n                    print(f.read())\r\n            else:\r\n                print(f\"\\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}\")\r\n"
+  },
+  {
+    "count": 4,
+    "removed": true,
+    "value": "                \r\nif __name__ == \"__main__\":\r\n    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)\r\n    boss = Boss_Agent(provider)\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 18,
+    "removed": true,
+    "value": "    user_request = input(\"What would you like me to do? \")\r\n    steps = boss.process_user_request(user_request)\r\n\r\n    print(\"\\nBreakdown of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    # Execute all steps\r\n    boss.execute_steps()\r\n\r\n    print(\"\\nFinal status of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    print(\"\\n\" + boss.get_final_result())\r\n\r\n    if DEBUG:\r\n        boss.print_debug_info()"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "# ... (main execution remains the same)"
+  }
+]
+2024-07-07T14:59:54.321Z: Processing change 0: {"count":39,"value":"# agents/Boss_Agent.py\r\n\r\nimport json\r\nimport os\r\nimport sys\r\nimport time\r\n\r\nfrom typing import Dict, List, Tuple\r\n\r\n# Add the parent directory to sys.path to import from sibling directories\r\nsys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\r\n\r\nfrom configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG\r\nfrom providers.anthropic_provider import AnthropicProvider\r\nfrom agents.Web_Agent import Web_Agent\r\nfrom agents.File_Agent import File_Agent\r\n\r\nclass SharedSession:\r\n    def __init__(self):\r\n        self.data = {}\r\n\r\n    def __setitem__(self, key, value):\r\n        self.data[key] = value\r\n\r\n    def __getitem__(self, key):\r\n        return self.data.get(key)\r\n\r\n    def __contains__(self, key):\r\n        return key in self.data\r\n\r\nclass Boss_Agent:\r\n    def __init__(self, provider):\r\n        self.provider = provider\r\n        self.actionable_requests = []\r\n        self.shared_session = SharedSession()\r\n        self.web_agent = Web_Agent(provider)\r\n        self.file_agent = File_Agent(provider, self.shared_session)\r\n        self.results = {}\r\n\r\n"}
+2024-07-07T14:59:54.321Z: Unchanged content
+2024-07-07T14:59:54.321Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+
+2024-07-07T14:59:54.322Z: Processing change 1: {"count":9,"removed":true,"value":"    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(f\"Processing user request: {user_request}\")\r\n        prompt = self._create_breakdown_prompt(user_request)\r\n        if DEBUG:\r\n            print(f\"Prompt: {prompt}\")\r\n        response = self.provider.generate(prompt)\r\n        self.actionable_requests = self._parse_response(response)\r\n        return self.actionable_requests\r\n"}
+2024-07-07T14:59:54.322Z: Removed content
+2024-07-07T14:59:54.322Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+
+2024-07-07T14:59:54.323Z: Processing change 2: {"count":1,"added":true,"value":"    # ... (other methods remain the same)\r\n"}
+2024-07-07T14:59:54.323Z: Added content
+2024-07-07T14:59:54.324Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+2024-07-07T14:59:54.324Z: Processing change 3: {"count":1,"value":"\r\n"}
+2024-07-07T14:59:54.324Z: Unchanged content
+2024-07-07T14:59:54.324Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+
+2024-07-07T14:59:54.325Z: Processing change 4: {"count":25,"removed":true,"value":"    def _create_breakdown_prompt(self, user_request: str) -> str:\r\n        return f\"\"\"\r\n        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:\r\n\r\n        User Request: \"{user_request}\"\r\n\r\n        Please break this request down into a series of actionable steps. Each step should be in the format:\r\n        [target_agent], [target_request], False\r\n\r\n        Where:\r\n        - [target_agent] is one of: Web_Agent or File_Agent\r\n        - [target_request] is the specific task for that agent\r\n        - False indicates that the task is not yet complete\r\n\r\n        Rules:\r\n        1. Web_Agent handles general information retrieval and processing tasks.\r\n        2. File_Agent handles all file-related operations (creating, writing).\r\n        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.\r\n        4. Provide the steps in the order they should be executed.\r\n        5. Do not include a separate step for saving the file. The write operation will automatically save the file.\r\n\r\n        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.\r\n        \"\"\"\r\n\r\n    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:\r\n"}
+2024-07-07T14:59:54.325Z: Removed content
+2024-07-07T14:59:54.325Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+
+2024-07-07T14:59:54.326Z: Processing change 5: {"count":1,"added":true,"value":"    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n"}
+2024-07-07T14:59:54.326Z: Added content
+2024-07-07T14:59:54.326Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+
+2024-07-07T14:59:54.327Z: Processing change 6: {"count":1,"value":"        if DEBUG:\r\n"}
+2024-07-07T14:59:54.327Z: Unchanged content
+2024-07-07T14:59:54.327Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+
+2024-07-07T14:59:54.327Z: Processing change 7: {"count":1,"removed":true,"value":"            print(f\"Parsing response: {response}\")  \r\n"}
+2024-07-07T14:59:54.327Z: Removed content
+2024-07-07T14:59:54.328Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+
+2024-07-07T14:59:54.328Z: Processing change 8: {"count":1,"added":true,"value":"            print(f\"Executing request: {agent} - {request}\")\r\n"}
+2024-07-07T14:59:54.328Z: Added content
+2024-07-07T14:59:54.328Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+
+2024-07-07T14:59:54.328Z: Processing change 9: {"count":1,"value":"        try:\r\n"}
+2024-07-07T14:59:54.328Z: Unchanged content
+2024-07-07T14:59:54.329Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+
+2024-07-07T14:59:54.329Z: Processing change 10: {"count":7,"removed":true,"value":"            # Extract the JSON array from the response\r\n            json_str = response.strip().split('\\n')[-1]  # Get the last line of the response\r\n            steps = json.loads(json_str)\r\n            return [(step[0], step[1], step[2]) for step in steps]\r\n        except json.JSONDecodeError:\r\n            print(\"Error parsing JSON response. Using fallback parsing method.\")\r\n            return self._fallback_parse(response)\r\n"}
+2024-07-07T14:59:54.329Z: Removed content
+2024-07-07T14:59:54.329Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+
+2024-07-07T14:59:54.330Z: Processing change 11: {"count":12,"added":true,"value":"            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result:\r\n                    if \"process\" in request.lower() or \"create\" in request.lower():\r\n                        self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n"}
+2024-07-07T14:59:54.330Z: Added content
+2024-07-07T14:59:54.330Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+2024-07-07T14:59:54.330Z: Processing change 12: {"count":1,"value":"\r\n"}
+2024-07-07T14:59:54.330Z: Unchanged content
+2024-07-07T14:59:54.331Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+
+2024-07-07T14:59:54.331Z: Processing change 13: {"count":44,"removed":true,"value":"    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(\"Fallback parsing method\")\r\n        steps = []\r\n        for line in response.split('\\n'):\r\n            if ',' in line and '[' in line and ']' in line:\r\n                parts = line.strip()[1:-1].split(',')\r\n                if len(parts) >= 3:\r\n                    agent = parts[0].strip().strip('\"')\r\n                    request = ','.join(parts[1:-1]).strip().strip('\"')\r\n                    is_complete = False  # Always set to False initially\r\n                    steps.append((agent, request, is_complete))\r\n        return steps\r\n\r\n\r\n    def update_step_status(self, index: int, is_complete: bool):\r\n        if DEBUG:\r\n            print(f\"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}\")\r\n        if 0 <= index < len(self.actionable_requests):\r\n            agent, request, _ = self.actionable_requests[index]\r\n            self.actionable_requests[index] = (agent, request, is_complete)\r\n\r\n    def get_next_incomplete_step(self) -> Tuple[int, str, str]:\r\n        if DEBUG:\r\n            print(\"Getting next incomplete step\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if not is_complete:\r\n                return index, agent, request\r\n        return -1, \"\", \"\"  # All steps are complete\r\n\r\n    def all_steps_complete(self) -> bool:\r\n        if DEBUG:\r\n            print(\"Checking if all steps are complete\")\r\n        return all(is_complete for _, _, is_complete in self.actionable_requests)\r\n\r\n    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):\r\n        if DEBUG:\r\n            print(f\"Replacing placeholders in step {step_index + 1}\")\r\n        if 0 <= step_index < len(self.actionable_requests):\r\n            agent, request, is_complete = self.actionable_requests[step_index]\r\n            for placeholder, value in replacements.items():\r\n                request = request.replace(f\"{{{placeholder}}}\", str(value))\r\n            self.actionable_requests[step_index] = (agent, request, is_complete)\r\n\r\n"}
+2024-07-07T14:59:54.331Z: Removed content
+2024-07-07T14:59:54.331Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+
+2024-07-07T14:59:54.332Z: Processing change 14: {"count":21,"value":"    def execute_steps(self):\r\n        if DEBUG:\r\n            print(\"Executing steps\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if is_complete:\r\n                continue\r\n\r\n            print(f\"\\nExecuting step {index + 1}: {agent} - {request}\")\r\n            \r\n            result = self._execute_agent_request(agent, request)\r\n            self.results[index] = result\r\n\r\n            print(f\"Result: {result[:100]}...\")  # Print first 100 characters of the result\r\n\r\n            self.actionable_requests[index] = (agent, request, True)\r\n            \r\n            # Add a 2-second delay between requests\r\n            time.sleep(2)\r\n\r\n        print(\"\\nAll steps completed!\")\r\n\r\n"}
+2024-07-07T14:59:54.332Z: Unchanged content
+2024-07-07T14:59:54.332Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+
+2024-07-07T14:59:54.332Z: Processing change 15: {"count":36,"removed":true,"value":"    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n        if DEBUG:\r\n            print(f\"Executing request: {agent} - {request}\")\r\n        try:\r\n            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result and \"compile\" in request.lower():\r\n                    self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n\r\n    def get_final_result(self) -> str:\r\n        if DEBUG:\r\n            print(\"Getting final result\")\r\n        if not self.results:\r\n            return \"No steps were executed.\"\r\n        \r\n        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    actual_content = f.read()\r\n                if actual_content == self.shared_session['file_content']:\r\n                    return f\"Python function has been created and saved in {self.shared_session['file_name']}. Content:\\n\\n{self.shared_session['file_content']}\"\r\n                else:\r\n                    return f\"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code.\"\r\n            else:\r\n                return f\"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}.\"\r\n        else:\r\n            return \"Operation completed, but couldn't retrieve final code or file name.\"\r\n        \r\n"}
+2024-07-07T14:59:54.332Z: Removed content
+2024-07-07T14:59:54.333Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+
+2024-07-07T14:59:54.333Z: Processing change 16: {"count":15,"value":"    def print_debug_info(self):\r\n        print(\"\\nDebug Information:\")\r\n        print(f\"Shared Session: {self.shared_session.data}\")\r\n        print(f\"Results: {self.results}\")\r\n        print(f\"Actionable Requests: {self.actionable_requests}\")\r\n        \r\n        # Print file contents\r\n        if 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    print(f\"\\nContents of {self.shared_session['file_name']}:\")\r\n                    print(f.read())\r\n            else:\r\n                print(f\"\\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}\")\r\n"}
+2024-07-07T14:59:54.333Z: Unchanged content
+2024-07-07T14:59:54.333Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+2024-07-07T14:59:54.333Z: Processing change 17: {"count":4,"removed":true,"value":"                \r\nif __name__ == \"__main__\":\r\n    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)\r\n    boss = Boss_Agent(provider)\r\n"}
+2024-07-07T14:59:54.334Z: Removed content
+2024-07-07T14:59:54.334Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+2024-07-07T14:59:54.334Z: Processing change 18: {"count":1,"value":"\r\n"}
+2024-07-07T14:59:54.334Z: Unchanged content
+2024-07-07T14:59:54.334Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+
+2024-07-07T14:59:54.335Z: Processing change 19: {"count":18,"removed":true,"value":"    user_request = input(\"What would you like me to do? \")\r\n    steps = boss.process_user_request(user_request)\r\n\r\n    print(\"\\nBreakdown of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    # Execute all steps\r\n    boss.execute_steps()\r\n\r\n    print(\"\\nFinal status of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    print(\"\\n\" + boss.get_final_result())\r\n\r\n    if DEBUG:\r\n        boss.print_debug_info()"}
+2024-07-07T14:59:54.335Z: Removed content
+2024-07-07T14:59:54.335Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+
+2024-07-07T14:59:54.335Z: Processing change 20: {"count":1,"added":true,"value":"# ... (main execution remains the same)"}
+2024-07-07T14:59:54.335Z: Added content
+2024-07-07T14:59:54.335Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T14:59:54.336Z: Final new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T14:59:54.345Z: Edit succeeded: true
+2024-07-07T15:00:59.464Z: jPaste function called
+2024-07-07T15:00:59.472Z: Clipboard content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T15:00:59.472Z: Document content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print(f"Processing user request: {user_request}")
+        prompt = self._create_breakdown_prompt(user_request)
+        if DEBUG:
+            print(f"Prompt: {prompt}")
+        response = self.provider.generate(prompt)
+        self.actionable_requests = self._parse_response(response)
+        return self.actionable_requests
+
+    def _create_breakdown_prompt(self, user_request: str) -> str:
+        return f"""
+        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:
+
+        User Request: "{user_request}"
+
+        Please break this request down into a series of actionable steps. Each step should be in the format:
+        [target_agent], [target_request], False
+
+        Where:
+        - [target_agent] is one of: Web_Agent or File_Agent
+        - [target_request] is the specific task for that agent
+        - False indicates that the task is not yet complete
+
+        Rules:
+        1. Web_Agent handles general information retrieval and processing tasks.
+        2. File_Agent handles all file-related operations (creating, writing).
+        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.
+        4. Provide the steps in the order they should be executed.
+        5. Do not include a separate step for saving the file. The write operation will automatically save the file.
+
+        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.
+        """
+
+    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print(f"Parsing response: {response}")  
+        try:
+            # Extract the JSON array from the response
+            json_str = response.strip().split('\n')[-1]  # Get the last line of the response
+            steps = json.loads(json_str)
+            return [(step[0], step[1], step[2]) for step in steps]
+        except json.JSONDecodeError:
+            print("Error parsing JSON response. Using fallback parsing method.")
+            return self._fallback_parse(response)
+
+    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:
+        if DEBUG:
+            print("Fallback parsing method")
+        steps = []
+        for line in response.split('\n'):
+            if ',' in line and '[' in line and ']' in line:
+                parts = line.strip()[1:-1].split(',')
+                if len(parts) >= 3:
+                    agent = parts[0].strip().strip('"')
+                    request = ','.join(parts[1:-1]).strip().strip('"')
+                    is_complete = False  # Always set to False initially
+                    steps.append((agent, request, is_complete))
+        return steps
+
+
+    def update_step_status(self, index: int, is_complete: bool):
+        if DEBUG:
+            print(f"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}")
+        if 0 <= index < len(self.actionable_requests):
+            agent, request, _ = self.actionable_requests[index]
+            self.actionable_requests[index] = (agent, request, is_complete)
+
+    def get_next_incomplete_step(self) -> Tuple[int, str, str]:
+        if DEBUG:
+            print("Getting next incomplete step")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if not is_complete:
+                return index, agent, request
+        return -1, "", ""  # All steps are complete
+
+    def all_steps_complete(self) -> bool:
+        if DEBUG:
+            print("Checking if all steps are complete")
+        return all(is_complete for _, _, is_complete in self.actionable_requests)
+
+    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):
+        if DEBUG:
+            print(f"Replacing placeholders in step {step_index + 1}")
+        if 0 <= step_index < len(self.actionable_requests):
+            agent, request, is_complete = self.actionable_requests[step_index]
+            for placeholder, value in replacements.items():
+                request = request.replace(f"{{{placeholder}}}", str(value))
+            self.actionable_requests[step_index] = (agent, request, is_complete)
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result and "compile" in request.lower():
+                    self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def get_final_result(self) -> str:
+        if DEBUG:
+            print("Getting final result")
+        if not self.results:
+            return "No steps were executed."
+        
+        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    actual_content = f.read()
+                if actual_content == self.shared_session['file_content']:
+                    return f"Python function has been created and saved in {self.shared_session['file_name']}. Content:\n\n{self.shared_session['file_content']}"
+                else:
+                    return f"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code."
+            else:
+                return f"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}."
+        else:
+            return "Operation completed, but couldn't retrieve final code or file name."
+        
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+                
+if __name__ == "__main__":
+    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)
+    boss = Boss_Agent(provider)
+
+    user_request = input("What would you like me to do? ")
+    steps = boss.process_user_request(user_request)
+
+    print("\nBreakdown of steps:")
+    for i, (agent, request, is_complete) in enumerate(steps):
+        print(f"{i+1}. {agent}: {request} (Complete: {is_complete})")
+
+    # Execute all steps
+    boss.execute_steps()
+
+    print("\nFinal status of steps:")
+    for i, (agent, request, is_complete) in enumerate(steps):
+        print(f"{i+1}. {agent}: {request} (Complete: {is_complete})")
+
+    print("\n" + boss.get_final_result())
+
+    if DEBUG:
+        boss.print_debug_info()
+2024-07-07T15:00:59.475Z: Diff changes: [
+  {
+    "count": 39,
+    "value": "# agents/Boss_Agent.py\r\n\r\nimport json\r\nimport os\r\nimport sys\r\nimport time\r\n\r\nfrom typing import Dict, List, Tuple\r\n\r\n# Add the parent directory to sys.path to import from sibling directories\r\nsys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\r\n\r\nfrom configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG\r\nfrom providers.anthropic_provider import AnthropicProvider\r\nfrom agents.Web_Agent import Web_Agent\r\nfrom agents.File_Agent import File_Agent\r\n\r\nclass SharedSession:\r\n    def __init__(self):\r\n        self.data = {}\r\n\r\n    def __setitem__(self, key, value):\r\n        self.data[key] = value\r\n\r\n    def __getitem__(self, key):\r\n        return self.data.get(key)\r\n\r\n    def __contains__(self, key):\r\n        return key in self.data\r\n\r\nclass Boss_Agent:\r\n    def __init__(self, provider):\r\n        self.provider = provider\r\n        self.actionable_requests = []\r\n        self.shared_session = SharedSession()\r\n        self.web_agent = Web_Agent(provider)\r\n        self.file_agent = File_Agent(provider, self.shared_session)\r\n        self.results = {}\r\n\r\n"
+  },
+  {
+    "count": 9,
+    "removed": true,
+    "value": "    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(f\"Processing user request: {user_request}\")\r\n        prompt = self._create_breakdown_prompt(user_request)\r\n        if DEBUG:\r\n            print(f\"Prompt: {prompt}\")\r\n        response = self.provider.generate(prompt)\r\n        self.actionable_requests = self._parse_response(response)\r\n        return self.actionable_requests\r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "    # ... (other methods remain the same)\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 25,
+    "removed": true,
+    "value": "    def _create_breakdown_prompt(self, user_request: str) -> str:\r\n        return f\"\"\"\r\n        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:\r\n\r\n        User Request: \"{user_request}\"\r\n\r\n        Please break this request down into a series of actionable steps. Each step should be in the format:\r\n        [target_agent], [target_request], False\r\n\r\n        Where:\r\n        - [target_agent] is one of: Web_Agent or File_Agent\r\n        - [target_request] is the specific task for that agent\r\n        - False indicates that the task is not yet complete\r\n\r\n        Rules:\r\n        1. Web_Agent handles general information retrieval and processing tasks.\r\n        2. File_Agent handles all file-related operations (creating, writing).\r\n        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.\r\n        4. Provide the steps in the order they should be executed.\r\n        5. Do not include a separate step for saving the file. The write operation will automatically save the file.\r\n\r\n        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.\r\n        \"\"\"\r\n\r\n    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:\r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n"
+  },
+  {
+    "count": 1,
+    "value": "        if DEBUG:\r\n"
+  },
+  {
+    "count": 1,
+    "removed": true,
+    "value": "            print(f\"Parsing response: {response}\")  \r\n"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "            print(f\"Executing request: {agent} - {request}\")\r\n"
+  },
+  {
+    "count": 1,
+    "value": "        try:\r\n"
+  },
+  {
+    "count": 7,
+    "removed": true,
+    "value": "            # Extract the JSON array from the response\r\n            json_str = response.strip().split('\\n')[-1]  # Get the last line of the response\r\n            steps = json.loads(json_str)\r\n            return [(step[0], step[1], step[2]) for step in steps]\r\n        except json.JSONDecodeError:\r\n            print(\"Error parsing JSON response. Using fallback parsing method.\")\r\n            return self._fallback_parse(response)\r\n"
+  },
+  {
+    "count": 12,
+    "added": true,
+    "value": "            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result:\r\n                    if \"process\" in request.lower() or \"create\" in request.lower():\r\n                        self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 44,
+    "removed": true,
+    "value": "    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(\"Fallback parsing method\")\r\n        steps = []\r\n        for line in response.split('\\n'):\r\n            if ',' in line and '[' in line and ']' in line:\r\n                parts = line.strip()[1:-1].split(',')\r\n                if len(parts) >= 3:\r\n                    agent = parts[0].strip().strip('\"')\r\n                    request = ','.join(parts[1:-1]).strip().strip('\"')\r\n                    is_complete = False  # Always set to False initially\r\n                    steps.append((agent, request, is_complete))\r\n        return steps\r\n\r\n\r\n    def update_step_status(self, index: int, is_complete: bool):\r\n        if DEBUG:\r\n            print(f\"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}\")\r\n        if 0 <= index < len(self.actionable_requests):\r\n            agent, request, _ = self.actionable_requests[index]\r\n            self.actionable_requests[index] = (agent, request, is_complete)\r\n\r\n    def get_next_incomplete_step(self) -> Tuple[int, str, str]:\r\n        if DEBUG:\r\n            print(\"Getting next incomplete step\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if not is_complete:\r\n                return index, agent, request\r\n        return -1, \"\", \"\"  # All steps are complete\r\n\r\n    def all_steps_complete(self) -> bool:\r\n        if DEBUG:\r\n            print(\"Checking if all steps are complete\")\r\n        return all(is_complete for _, _, is_complete in self.actionable_requests)\r\n\r\n    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):\r\n        if DEBUG:\r\n            print(f\"Replacing placeholders in step {step_index + 1}\")\r\n        if 0 <= step_index < len(self.actionable_requests):\r\n            agent, request, is_complete = self.actionable_requests[step_index]\r\n            for placeholder, value in replacements.items():\r\n                request = request.replace(f\"{{{placeholder}}}\", str(value))\r\n            self.actionable_requests[step_index] = (agent, request, is_complete)\r\n\r\n"
+  },
+  {
+    "count": 21,
+    "value": "    def execute_steps(self):\r\n        if DEBUG:\r\n            print(\"Executing steps\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if is_complete:\r\n                continue\r\n\r\n            print(f\"\\nExecuting step {index + 1}: {agent} - {request}\")\r\n            \r\n            result = self._execute_agent_request(agent, request)\r\n            self.results[index] = result\r\n\r\n            print(f\"Result: {result[:100]}...\")  # Print first 100 characters of the result\r\n\r\n            self.actionable_requests[index] = (agent, request, True)\r\n            \r\n            # Add a 2-second delay between requests\r\n            time.sleep(2)\r\n\r\n        print(\"\\nAll steps completed!\")\r\n\r\n"
+  },
+  {
+    "count": 36,
+    "removed": true,
+    "value": "    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n        if DEBUG:\r\n            print(f\"Executing request: {agent} - {request}\")\r\n        try:\r\n            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result and \"compile\" in request.lower():\r\n                    self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n\r\n    def get_final_result(self) -> str:\r\n        if DEBUG:\r\n            print(\"Getting final result\")\r\n        if not self.results:\r\n            return \"No steps were executed.\"\r\n        \r\n        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    actual_content = f.read()\r\n                if actual_content == self.shared_session['file_content']:\r\n                    return f\"Python function has been created and saved in {self.shared_session['file_name']}. Content:\\n\\n{self.shared_session['file_content']}\"\r\n                else:\r\n                    return f\"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code.\"\r\n            else:\r\n                return f\"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}.\"\r\n        else:\r\n            return \"Operation completed, but couldn't retrieve final code or file name.\"\r\n        \r\n"
+  },
+  {
+    "count": 15,
+    "value": "    def print_debug_info(self):\r\n        print(\"\\nDebug Information:\")\r\n        print(f\"Shared Session: {self.shared_session.data}\")\r\n        print(f\"Results: {self.results}\")\r\n        print(f\"Actionable Requests: {self.actionable_requests}\")\r\n        \r\n        # Print file contents\r\n        if 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    print(f\"\\nContents of {self.shared_session['file_name']}:\")\r\n                    print(f.read())\r\n            else:\r\n                print(f\"\\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}\")\r\n"
+  },
+  {
+    "count": 4,
+    "removed": true,
+    "value": "                \r\nif __name__ == \"__main__\":\r\n    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)\r\n    boss = Boss_Agent(provider)\r\n"
+  },
+  {
+    "count": 1,
+    "value": "\r\n"
+  },
+  {
+    "count": 18,
+    "removed": true,
+    "value": "    user_request = input(\"What would you like me to do? \")\r\n    steps = boss.process_user_request(user_request)\r\n\r\n    print(\"\\nBreakdown of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    # Execute all steps\r\n    boss.execute_steps()\r\n\r\n    print(\"\\nFinal status of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    print(\"\\n\" + boss.get_final_result())\r\n\r\n    if DEBUG:\r\n        boss.print_debug_info()"
+  },
+  {
+    "count": 1,
+    "added": true,
+    "value": "# ... (main execution remains the same)"
+  }
+]
+2024-07-07T15:00:59.475Z: Processing change 0: {"count":39,"value":"# agents/Boss_Agent.py\r\n\r\nimport json\r\nimport os\r\nimport sys\r\nimport time\r\n\r\nfrom typing import Dict, List, Tuple\r\n\r\n# Add the parent directory to sys.path to import from sibling directories\r\nsys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\r\n\r\nfrom configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG\r\nfrom providers.anthropic_provider import AnthropicProvider\r\nfrom agents.Web_Agent import Web_Agent\r\nfrom agents.File_Agent import File_Agent\r\n\r\nclass SharedSession:\r\n    def __init__(self):\r\n        self.data = {}\r\n\r\n    def __setitem__(self, key, value):\r\n        self.data[key] = value\r\n\r\n    def __getitem__(self, key):\r\n        return self.data.get(key)\r\n\r\n    def __contains__(self, key):\r\n        return key in self.data\r\n\r\nclass Boss_Agent:\r\n    def __init__(self, provider):\r\n        self.provider = provider\r\n        self.actionable_requests = []\r\n        self.shared_session = SharedSession()\r\n        self.web_agent = Web_Agent(provider)\r\n        self.file_agent = File_Agent(provider, self.shared_session)\r\n        self.results = {}\r\n\r\n"}
+2024-07-07T15:00:59.475Z: Unchanged content
+2024-07-07T15:00:59.475Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+
+2024-07-07T15:00:59.475Z: Processing change 1: {"count":9,"removed":true,"value":"    def process_user_request(self, user_request: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(f\"Processing user request: {user_request}\")\r\n        prompt = self._create_breakdown_prompt(user_request)\r\n        if DEBUG:\r\n            print(f\"Prompt: {prompt}\")\r\n        response = self.provider.generate(prompt)\r\n        self.actionable_requests = self._parse_response(response)\r\n        return self.actionable_requests\r\n"}
+2024-07-07T15:00:59.476Z: Removed content
+2024-07-07T15:00:59.476Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+
+2024-07-07T15:00:59.476Z: Processing change 2: {"count":1,"added":true,"value":"    # ... (other methods remain the same)\r\n"}
+2024-07-07T15:00:59.476Z: Added content
+2024-07-07T15:00:59.477Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+2024-07-07T15:00:59.477Z: Processing change 3: {"count":1,"value":"\r\n"}
+2024-07-07T15:00:59.477Z: Unchanged content
+2024-07-07T15:00:59.477Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+
+2024-07-07T15:00:59.478Z: Processing change 4: {"count":25,"removed":true,"value":"    def _create_breakdown_prompt(self, user_request: str) -> str:\r\n        return f\"\"\"\r\n        I am a Boss Agent tasked with breaking down the following user request into an array of actionable requests to be sent to other agents:\r\n\r\n        User Request: \"{user_request}\"\r\n\r\n        Please break this request down into a series of actionable steps. Each step should be in the format:\r\n        [target_agent], [target_request], False\r\n\r\n        Where:\r\n        - [target_agent] is one of: Web_Agent or File_Agent\r\n        - [target_request] is the specific task for that agent\r\n        - False indicates that the task is not yet complete\r\n\r\n        Rules:\r\n        1. Web_Agent handles general information retrieval and processing tasks.\r\n        2. File_Agent handles all file-related operations (creating, writing).\r\n        3. If a step depends on the result of a previous step, use placeholders like {{content}} or {{target_file}}.\r\n        4. Provide the steps in the order they should be executed.\r\n        5. Do not include a separate step for saving the file. The write operation will automatically save the file.\r\n\r\n        Please provide your response as a JSON array of arrays, each inner array representing a step with the three elements described above.\r\n        \"\"\"\r\n\r\n    def _parse_response(self, response: str) -> List[Tuple[str, str, bool]]:\r\n"}
+2024-07-07T15:00:59.478Z: Removed content
+2024-07-07T15:00:59.478Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+
+2024-07-07T15:00:59.478Z: Processing change 5: {"count":1,"added":true,"value":"    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n"}
+2024-07-07T15:00:59.478Z: Added content
+2024-07-07T15:00:59.479Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+
+2024-07-07T15:00:59.479Z: Processing change 6: {"count":1,"value":"        if DEBUG:\r\n"}
+2024-07-07T15:00:59.479Z: Unchanged content
+2024-07-07T15:00:59.480Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+
+2024-07-07T15:00:59.480Z: Processing change 7: {"count":1,"removed":true,"value":"            print(f\"Parsing response: {response}\")  \r\n"}
+2024-07-07T15:00:59.480Z: Removed content
+2024-07-07T15:00:59.480Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+
+2024-07-07T15:00:59.480Z: Processing change 8: {"count":1,"added":true,"value":"            print(f\"Executing request: {agent} - {request}\")\r\n"}
+2024-07-07T15:00:59.481Z: Added content
+2024-07-07T15:00:59.481Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+
+2024-07-07T15:00:59.481Z: Processing change 9: {"count":1,"value":"        try:\r\n"}
+2024-07-07T15:00:59.481Z: Unchanged content
+2024-07-07T15:00:59.481Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+
+2024-07-07T15:00:59.481Z: Processing change 10: {"count":7,"removed":true,"value":"            # Extract the JSON array from the response\r\n            json_str = response.strip().split('\\n')[-1]  # Get the last line of the response\r\n            steps = json.loads(json_str)\r\n            return [(step[0], step[1], step[2]) for step in steps]\r\n        except json.JSONDecodeError:\r\n            print(\"Error parsing JSON response. Using fallback parsing method.\")\r\n            return self._fallback_parse(response)\r\n"}
+2024-07-07T15:00:59.482Z: Removed content
+2024-07-07T15:00:59.482Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+
+2024-07-07T15:00:59.482Z: Processing change 11: {"count":12,"added":true,"value":"            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result:\r\n                    if \"process\" in request.lower() or \"create\" in request.lower():\r\n                        self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n"}
+2024-07-07T15:00:59.482Z: Added content
+2024-07-07T15:00:59.483Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+2024-07-07T15:00:59.483Z: Processing change 12: {"count":1,"value":"\r\n"}
+2024-07-07T15:00:59.483Z: Unchanged content
+2024-07-07T15:00:59.483Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+
+2024-07-07T15:00:59.483Z: Processing change 13: {"count":44,"removed":true,"value":"    def _fallback_parse(self, response: str) -> List[Tuple[str, str, bool]]:\r\n        if DEBUG:\r\n            print(\"Fallback parsing method\")\r\n        steps = []\r\n        for line in response.split('\\n'):\r\n            if ',' in line and '[' in line and ']' in line:\r\n                parts = line.strip()[1:-1].split(',')\r\n                if len(parts) >= 3:\r\n                    agent = parts[0].strip().strip('\"')\r\n                    request = ','.join(parts[1:-1]).strip().strip('\"')\r\n                    is_complete = False  # Always set to False initially\r\n                    steps.append((agent, request, is_complete))\r\n        return steps\r\n\r\n\r\n    def update_step_status(self, index: int, is_complete: bool):\r\n        if DEBUG:\r\n            print(f\"Updating step {index + 1} status to {'Complete' if is_complete else 'Incomplete'}\")\r\n        if 0 <= index < len(self.actionable_requests):\r\n            agent, request, _ = self.actionable_requests[index]\r\n            self.actionable_requests[index] = (agent, request, is_complete)\r\n\r\n    def get_next_incomplete_step(self) -> Tuple[int, str, str]:\r\n        if DEBUG:\r\n            print(\"Getting next incomplete step\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if not is_complete:\r\n                return index, agent, request\r\n        return -1, \"\", \"\"  # All steps are complete\r\n\r\n    def all_steps_complete(self) -> bool:\r\n        if DEBUG:\r\n            print(\"Checking if all steps are complete\")\r\n        return all(is_complete for _, _, is_complete in self.actionable_requests)\r\n\r\n    def replace_placeholders(self, step_index: int, replacements: Dict[str, str]):\r\n        if DEBUG:\r\n            print(f\"Replacing placeholders in step {step_index + 1}\")\r\n        if 0 <= step_index < len(self.actionable_requests):\r\n            agent, request, is_complete = self.actionable_requests[step_index]\r\n            for placeholder, value in replacements.items():\r\n                request = request.replace(f\"{{{placeholder}}}\", str(value))\r\n            self.actionable_requests[step_index] = (agent, request, is_complete)\r\n\r\n"}
+2024-07-07T15:00:59.484Z: Removed content
+2024-07-07T15:00:59.484Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+
+2024-07-07T15:00:59.484Z: Processing change 14: {"count":21,"value":"    def execute_steps(self):\r\n        if DEBUG:\r\n            print(\"Executing steps\")\r\n        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):\r\n            if is_complete:\r\n                continue\r\n\r\n            print(f\"\\nExecuting step {index + 1}: {agent} - {request}\")\r\n            \r\n            result = self._execute_agent_request(agent, request)\r\n            self.results[index] = result\r\n\r\n            print(f\"Result: {result[:100]}...\")  # Print first 100 characters of the result\r\n\r\n            self.actionable_requests[index] = (agent, request, True)\r\n            \r\n            # Add a 2-second delay between requests\r\n            time.sleep(2)\r\n\r\n        print(\"\\nAll steps completed!\")\r\n\r\n"}
+2024-07-07T15:00:59.484Z: Unchanged content
+2024-07-07T15:00:59.484Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+
+2024-07-07T15:00:59.485Z: Processing change 15: {"count":36,"removed":true,"value":"    def _execute_agent_request(self, agent: str, request: str) -> str:\r\n        if DEBUG:\r\n            print(f\"Executing request: {agent} - {request}\")\r\n        try:\r\n            if agent == \"Web_Agent\":\r\n                web_result = self.web_agent.process_request(request)\r\n                if web_result and \"compile\" in request.lower():\r\n                    self.shared_session['file_content'] = web_result\r\n                return web_result\r\n            elif agent == \"File_Agent\":\r\n                return self.file_agent.process_request(request)\r\n            else:\r\n                return f\"Unknown agent: {agent}\"\r\n        except Exception as e:\r\n            return f\"Error executing {agent} request: {str(e)}\"\r\n\r\n    def get_final_result(self) -> str:\r\n        if DEBUG:\r\n            print(\"Getting final result\")\r\n        if not self.results:\r\n            return \"No steps were executed.\"\r\n        \r\n        if 'file_content' in self.shared_session and 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    actual_content = f.read()\r\n                if actual_content == self.shared_session['file_content']:\r\n                    return f\"Python function has been created and saved in {self.shared_session['file_name']}. Content:\\n\\n{self.shared_session['file_content']}\"\r\n                else:\r\n                    return f\"File {self.shared_session['file_name']} was created, but its content does not match the expected Python code.\"\r\n            else:\r\n                return f\"File {self.shared_session['file_name']} was not created in {DEFAULT_DIR}.\"\r\n        else:\r\n            return \"Operation completed, but couldn't retrieve final code or file name.\"\r\n        \r\n"}
+2024-07-07T15:00:59.485Z: Removed content
+2024-07-07T15:00:59.485Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+
+2024-07-07T15:00:59.485Z: Processing change 16: {"count":15,"value":"    def print_debug_info(self):\r\n        print(\"\\nDebug Information:\")\r\n        print(f\"Shared Session: {self.shared_session.data}\")\r\n        print(f\"Results: {self.results}\")\r\n        print(f\"Actionable Requests: {self.actionable_requests}\")\r\n        \r\n        # Print file contents\r\n        if 'file_name' in self.shared_session:\r\n            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])\r\n            if os.path.exists(file_path):\r\n                with open(file_path, 'r') as f:\r\n                    print(f\"\\nContents of {self.shared_session['file_name']}:\")\r\n                    print(f.read())\r\n            else:\r\n                print(f\"\\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}\")\r\n"}
+2024-07-07T15:00:59.486Z: Unchanged content
+2024-07-07T15:00:59.486Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+2024-07-07T15:00:59.486Z: Processing change 17: {"count":4,"removed":true,"value":"                \r\nif __name__ == \"__main__\":\r\n    provider = AnthropicProvider(api_url=None, api_key=ANTHROPIC_API_KEY)\r\n    boss = Boss_Agent(provider)\r\n"}
+2024-07-07T15:00:59.486Z: Removed content
+2024-07-07T15:00:59.486Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+2024-07-07T15:00:59.487Z: Processing change 18: {"count":1,"value":"\r\n"}
+2024-07-07T15:00:59.487Z: Unchanged content
+2024-07-07T15:00:59.487Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+
+2024-07-07T15:00:59.487Z: Processing change 19: {"count":18,"removed":true,"value":"    user_request = input(\"What would you like me to do? \")\r\n    steps = boss.process_user_request(user_request)\r\n\r\n    print(\"\\nBreakdown of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    # Execute all steps\r\n    boss.execute_steps()\r\n\r\n    print(\"\\nFinal status of steps:\")\r\n    for i, (agent, request, is_complete) in enumerate(steps):\r\n        print(f\"{i+1}. {agent}: {request} (Complete: {is_complete})\")\r\n\r\n    print(\"\\n\" + boss.get_final_result())\r\n\r\n    if DEBUG:\r\n        boss.print_debug_info()"}
+2024-07-07T15:00:59.488Z: Removed content
+2024-07-07T15:00:59.488Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+
+2024-07-07T15:00:59.488Z: Processing change 20: {"count":1,"added":true,"value":"# ... (main execution remains the same)"}
+2024-07-07T15:00:59.488Z: Added content
+2024-07-07T15:00:59.488Z: Current new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T15:00:59.489Z: Final new content: # agents/Boss_Agent.py
+
+import json
+import os
+import sys
+import time
+
+from typing import Dict, List, Tuple
+
+# Add the parent directory to sys.path to import from sibling directories
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from configs.config_local import ANTHROPIC_API_KEY, DEFAULT_DIR, DEBUG
+from providers.anthropic_provider import AnthropicProvider
+from agents.Web_Agent import Web_Agent
+from agents.File_Agent import File_Agent
+
+class SharedSession:
+    def __init__(self):
+        self.data = {}
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        return self.data.get(key)
+
+    def __contains__(self, key):
+        return key in self.data
+
+class Boss_Agent:
+    def __init__(self, provider):
+        self.provider = provider
+        self.actionable_requests = []
+        self.shared_session = SharedSession()
+        self.web_agent = Web_Agent(provider)
+        self.file_agent = File_Agent(provider, self.shared_session)
+        self.results = {}
+
+    # ... (other methods remain the same)
+
+    def _execute_agent_request(self, agent: str, request: str) -> str:
+        if DEBUG:
+            print(f"Executing request: {agent} - {request}")
+        try:
+            if agent == "Web_Agent":
+                web_result = self.web_agent.process_request(request)
+                if web_result:
+                    if "process" in request.lower() or "create" in request.lower():
+                        self.shared_session['file_content'] = web_result
+                return web_result
+            elif agent == "File_Agent":
+                return self.file_agent.process_request(request)
+            else:
+                return f"Unknown agent: {agent}"
+        except Exception as e:
+            return f"Error executing {agent} request: {str(e)}"
+
+    def execute_steps(self):
+        if DEBUG:
+            print("Executing steps")
+        for index, (agent, request, is_complete) in enumerate(self.actionable_requests):
+            if is_complete:
+                continue
+
+            print(f"\nExecuting step {index + 1}: {agent} - {request}")
+            
+            result = self._execute_agent_request(agent, request)
+            self.results[index] = result
+
+            print(f"Result: {result[:100]}...")  # Print first 100 characters of the result
+
+            self.actionable_requests[index] = (agent, request, True)
+            
+            # Add a 2-second delay between requests
+            time.sleep(2)
+
+        print("\nAll steps completed!")
+
+    def print_debug_info(self):
+        print("\nDebug Information:")
+        print(f"Shared Session: {self.shared_session.data}")
+        print(f"Results: {self.results}")
+        print(f"Actionable Requests: {self.actionable_requests}")
+        
+        # Print file contents
+        if 'file_name' in self.shared_session:
+            file_path = os.path.join(DEFAULT_DIR, self.shared_session['file_name'])
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    print(f"\nContents of {self.shared_session['file_name']}:")
+                    print(f.read())
+            else:
+                print(f"\nFile {self.shared_session['file_name']} does not exist in {DEFAULT_DIR}")
+
+# ... (main execution remains the same)
+2024-07-07T15:00:59.494Z: Edit succeeded: true
